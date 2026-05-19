@@ -9,7 +9,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest"
+    "test": "vitest",
+    "test:server": "bun test server/__tests__/",
+    "test:all": "vitest run && bun test server/__tests__/"
   },
   "dependencies": {
     "react": "^19.2.4",

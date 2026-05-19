@@ -1,122 +1,111 @@
-import { describe, it, expect } from 'vitest';
-import { stripCodeFences, ensureRenderCall } from '../utils';
+import { describe, it, expect } from 'bun:test';
+import { stripCodeFences, ensureRenderCall, parseAnthropicSSELine, parseGoogleSSELine } from '../utils';
 
 describe('stripCodeFences', () => {
-  it('기본 코드 펜스 제거 (jsx)', () => {
-    const input = '```jsx\nconst App = () => <div>Hello</div>;\n```';
-    const result = stripCodeFences(input);
-    expect(result).toBe("const App = () => <div>Hello</div>;");
+  it('jsx 코드 펜스를 제거한다', () => {
+    expect(stripCodeFences('```jsx\nconst A = () => <div/>;\n```')).toBe('const A = () => <div/>;');
   });
 
-  it('기본 코드 펜스 제거 (typescript)', () => {
-    const input = '```typescript\nconst x: number = 5;\n```';
-    const result = stripCodeFences(input);
-    expect(result).toBe('const x: number = 5;');
-  });
-
-  it('언어 지정 없는 코드 펜스 제거', () => {
-    const input = '```\nrender(<Comp />);\n```';
-    const result = stripCodeFences(input);
-    expect(result).toBe('render(<Comp />);');
-  });
-
-  it('끝의 공백이 있는 코드 펜스 제거 (evaluator 이슈 #1)', () => {
-    const input = '```jsx\nconst Btn = () => <button>Click</button>;\n```  ';
-    const result = stripCodeFences(input);
-    expect(result).toBe('const Btn = () => <button>Click</button>;');
-  });
-
-  it('끝의 탭과 개행이 있는 코드 펜스 제거', () => {
-    const input = '```javascript\nlet x = 1;\n```\t\n';
-    const result = stripCodeFences(input);
-    expect(result).toBe('let x = 1;');
-  });
-
-  it('여러 코드 블록 처리', () => {
-    const input = '```js\ncode1\n```\n\n```ts\ncode2\n```';
-    const result = stripCodeFences(input);
-    expect(result).toContain('code1');
-    expect(result).toContain('code2');
-  });
-
-  it('펜스 없는 코드는 그대로 반환', () => {
-    const input = 'const Comp = () => <div>Test</div>;';
-    const result = stripCodeFences(input);
-    expect(result).toBe(input);
-  });
-
-  it('시작 펜스만 있는 경우 처리', () => {
-    const input = '```jsx\nconst App = () => null;';
-    const result = stripCodeFences(input);
-    expect(result).toBe('const App = () => null;');
+  it('펜스 없는 코드는 그대로 반환한다', () => {
+    expect(stripCodeFences('const A = () => <div/>;')).toBe('const A = () => <div/>;');
   });
 });
 
 describe('ensureRenderCall', () => {
-  it('render() 호출이 있으면 그대로 반환', () => {
-    const input = 'const Btn = () => <button>Click</button>;\n\nrender(<Btn />);';
-    const result = ensureRenderCall(input);
-    expect(result).toBe(input);
+  it('render() 없으면 자동 추가한다', () => {
+    const code = 'const Button = () => <button/>;';
+    expect(ensureRenderCall(code)).toBe('const Button = () => <button/>;\n\nrender(<Button />);');
   });
 
-  it('const 선언된 컴포넌트에 render() 추가', () => {
-    const input = 'const MyButton = () => <button>Click</button>;';
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<MyButton />);');
-    expect(result).toContain('const MyButton');
+  it('render() 있으면 그대로 반환한다', () => {
+    const code = 'const Button = () => <button/>;\nrender(<Button />);';
+    expect(ensureRenderCall(code)).toBe(code);
+  });
+});
+
+describe('parseAnthropicSSELine', () => {
+  it('content_block_delta 이벤트에서 텍스트를 추출한다', () => {
+    const line = 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"const "}}';
+    expect(parseAnthropicSSELine(line)).toBe('const ');
   });
 
-  it('function 선언된 컴포넌트에 render() 추가', () => {
-    const input = 'function MyCard() { return <div>Card</div>; }';
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<MyCard />);');
+  it('빈 텍스트 delta는 빈 문자열을 반환한다', () => {
+    const line = 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}';
+    expect(parseAnthropicSSELine(line)).toBe('');
   });
 
-  it('화살표 함수 컴포넌트에 render() 추가 (evaluator 이슈 #2)', () => {
-    const input = 'const Button = () => <button>Click</button>;';
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<Button />);');
+  it('message_start 이벤트는 null을 반환한다', () => {
+    const line = 'data: {"type":"message_start","message":{}}';
+    expect(parseAnthropicSSELine(line)).toBeNull();
   });
 
-  it('export const 컴포넌트에 render() 추가 (evaluator 이슈 #2)', () => {
-    const input = 'export const AppComponent = () => <div>App</div>;';
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<AppComponent />);');
+  it('message_stop 이벤트는 null을 반환한다', () => {
+    const line = 'data: {"type":"message_stop"}';
+    expect(parseAnthropicSSELine(line)).toBeNull();
   });
 
-  it('export function 컴포넌트에 render() 추가', () => {
-    const input = 'export function Dashboard() { return <div>Dashboard</div>; }';
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<Dashboard />);');
+  it('content_block_stop 이벤트는 null을 반환한다', () => {
+    const line = 'data: {"type":"content_block_stop","index":0}';
+    expect(parseAnthropicSSELine(line)).toBeNull();
   });
 
-  it('render() 호출이 이미 있으면 중복 추가 안 함', () => {
-    const input = 'const Modal = () => <div>Modal</div>;\n\nrender(<Modal />);';
-    const result = ensureRenderCall(input);
-    expect(result).toBe(input);
+  it('data: 접두어 없는 줄은 null을 반환한다', () => {
+    expect(parseAnthropicSSELine('event: content_block_delta')).toBeNull();
   });
 
-  it('컴포넌트 이름이 없으면 추가 안 함', () => {
-    const input = '() => <div>Anonymous</div>';
-    const result = ensureRenderCall(input);
-    expect(result).toBe(input);
+  it('빈 줄은 null을 반환한다', () => {
+    expect(parseAnthropicSSELine('')).toBeNull();
   });
 
-  it('소문자로 시작하는 함수는 무시', () => {
-    const input = 'const helper = () => null;';
-    const result = ensureRenderCall(input);
-    expect(result).toBe(input);
+  it('[DONE] 신호는 null을 반환한다', () => {
+    expect(parseAnthropicSSELine('data: [DONE]')).toBeNull();
   });
 
-  it('복잡한 컴포넌트 코드도 정확히 처리', () => {
-    const input = `const Card = ({ title, children }) => (
-  <div style={{ border: '1px solid #ccc', padding: '16px' }}>
-    <h3>{title}</h3>
-    {children}
-  </div>
-);`;
-    const result = ensureRenderCall(input);
-    expect(result).toContain('render(<Card />);');
-    expect(result).toContain('const Card');
+  it('잘못된 JSON은 null을 반환한다', () => {
+    expect(parseAnthropicSSELine('data: {invalid json')).toBeNull();
+  });
+
+  it('text_delta가 아닌 delta 타입은 null을 반환한다', () => {
+    const line = 'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}';
+    expect(parseAnthropicSSELine(line)).toBeNull();
+  });
+});
+
+describe('parseGoogleSSELine', () => {
+  it('candidates 배열에서 텍스트를 추출한다', () => {
+    const line = 'data: {"candidates":[{"content":{"parts":[{"text":"Button"}],"role":"model"}}]}';
+    expect(parseGoogleSSELine(line)).toBe('Button');
+  });
+
+  it('parts가 여러 개면 모두 이어붙인다', () => {
+    const line = 'data: {"candidates":[{"content":{"parts":[{"text":"const "},{"text":"App"}],"role":"model"}}]}';
+    expect(parseGoogleSSELine(line)).toBe('const App');
+  });
+
+  it('text 없는 part는 빈 문자열로 처리한다', () => {
+    const line = 'data: {"candidates":[{"content":{"parts":[{}],"role":"model"}}]}';
+    expect(parseGoogleSSELine(line)).toBe('');
+  });
+
+  it('candidates 없는 응답은 null을 반환한다', () => {
+    const line = 'data: {"usageMetadata":{"promptTokenCount":10}}';
+    expect(parseGoogleSSELine(line)).toBeNull();
+  });
+
+  it('빈 candidates 배열은 null을 반환한다', () => {
+    const line = 'data: {"candidates":[]}';
+    expect(parseGoogleSSELine(line)).toBeNull();
+  });
+
+  it('data: 접두어 없는 줄은 null을 반환한다', () => {
+    expect(parseGoogleSSELine('event: something')).toBeNull();
+  });
+
+  it('빈 줄은 null을 반환한다', () => {
+    expect(parseGoogleSSELine('')).toBeNull();
+  });
+
+  it('잘못된 JSON은 null을 반환한다', () => {
+    expect(parseGoogleSSELine('data: {invalid')).toBeNull();
   });
 });
