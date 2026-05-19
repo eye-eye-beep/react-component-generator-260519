@@ -35,8 +35,8 @@ export function useComponentGenerator(): UseComponentGeneratorReturn {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(components));
-    } catch {
-      // 저장 공간 부족 등 storage 오류 무시
+    } catch (err) {
+      console.error('[RCG] localStorage save failed:', err);
     }
   }, [components]);
 

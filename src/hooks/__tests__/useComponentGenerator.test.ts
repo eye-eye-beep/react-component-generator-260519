@@ -52,9 +52,11 @@ describe('useComponentGenerator — localStorage 영속화', () => {
       result.current.removeComponent('id-1');
     });
 
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as GeneratedComponent[];
+    const saved = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) ?? '[]'
+    ) as Array<Record<string, unknown>>;
     expect(saved).toHaveLength(1);
-    expect(saved[0].id).toBe('id-2');
+    expect((saved[0] as Record<string, unknown>).id).toBe('id-2');
   });
 
   it('clearAll() 후 localStorage가 빈 배열로 저장된다', () => {
@@ -66,7 +68,9 @@ describe('useComponentGenerator — localStorage 영속화', () => {
       result.current.clearAll();
     });
 
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as GeneratedComponent[];
+    const saved = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) ?? '[]'
+    ) as Array<Record<string, unknown>>;
     expect(saved).toEqual([]);
   });
 
@@ -82,5 +86,28 @@ describe('useComponentGenerator — localStorage 영속화', () => {
     const { result } = renderHook(() => useComponentGenerator());
 
     expect(result.current.components).toEqual([]);
+  });
+
+  it('generate() 후 새 컴포넌트가 localStorage에 자동 저장된다', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ code: 'render(<div>Generated</div>)' }),
+      })
+    );
+
+    const { result } = renderHook(() => useComponentGenerator());
+
+    await act(async () => {
+      await result.current.generate('테스트 프롬프트', 'test-key', 'anthropic');
+    });
+
+    const saved = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) ?? '[]'
+    ) as Array<Record<string, unknown>>;
+    expect(saved).toHaveLength(1);
+    expect((saved[0] as Record<string, unknown>).prompt).toBe('테스트 프롬프트');
+    expect((saved[0] as Record<string, unknown>).code).toBe('render(<div>Generated</div>)');
   });
 });
