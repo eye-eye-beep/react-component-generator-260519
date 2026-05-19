@@ -1,3 +1,5 @@
+import { stripCodeFences, ensureRenderCall } from './utils';
+
 const SYSTEM_PROMPT = `You are a React component generator. Generate a single React component based on the user's description.
 
 Rules:
@@ -75,17 +77,27 @@ async function callAnthropic(prompt: string, apiKey: string): Promise<string> {
     }),
   });
 
+  if (response.status === 429) {
+    throw new Error('RATE_LIMIT_429');
+  }
+  if (response.status === 503) {
+    throw new Error('SERVICE_UNAVAILABLE_503');
+  }
   if (!response.ok) {
     throw new Error(`Claude API error: ${response.status}`);
   }
 
   const data = (await response.json()) as {
-    content: Array<{ type: string; text?: string }>;
+    content?: Array<{ type: string; text?: string }>;
   };
+
+  if (!Array.isArray(data.content)) {
+    throw new Error('Invalid Anthropic API response: missing content array');
+  }
 
   return data.content
     .filter((block) => block.type === 'text')
-    .map((block) => block.text)
+    .map((block) => block.text ?? '')
     .join('');
 }
 
@@ -103,12 +115,18 @@ async function callGoogle(prompt: string, apiKey: string): Promise<string> {
     }),
   });
 
+  if (response.status === 429) {
+    throw new Error('RATE_LIMIT_429');
+  }
+  if (response.status === 503) {
+    throw new Error('SERVICE_UNAVAILABLE_503');
+  }
   if (!response.ok) {
     throw new Error(`Gemini API error: ${response.status}`);
   }
 
   const data = (await response.json()) as {
-    candidates: Array<{
+    candidates?: Array<{
       content: { parts: Array<{ text?: string }> };
       finishReason?: string;
     }>;
@@ -119,28 +137,13 @@ async function callGoogle(prompt: string, apiKey: string): Promise<string> {
     throw new Error('생성된 코드가 너무 길어 잘렸습니다. 더 간단한 컴포넌트를 요청해주세요.');
   }
 
-  return (
-    candidate?.content?.parts
-      ?.map((part) => part.text)
-      ?.join('') ?? ''
-  );
-}
-
-function stripCodeFences(text: string): string {
-  return text
-    .replace(/^```(?:jsx|tsx|javascript|typescript)?\n?/gm, '')
-    .replace(/```$/gm, '')
-    .trim();
-}
-
-function ensureRenderCall(code: string): string {
-  if (/\brender\s*\(/.test(code)) return code;
-
-  const match = code.match(/(?:const|function)\s+([A-Z]\w+)/);
-  if (match) {
-    return `${code}\n\nrender(<${match[1]} />);`;
+  if (!candidate?.content?.parts || candidate.content.parts.length === 0) {
+    throw new Error('Gemini API 응답이 비어있습니다. 다시 시도해주세요.');
   }
-  return code;
+
+  return candidate.content.parts
+    .map((part) => part.text ?? '')
+    .join('');
 }
 
 const server = Bun.serve({
@@ -199,17 +202,17 @@ const server = Bun.serve({
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
 
-        if (message.includes('503')) {
-          return Response.json(
-            { error: 'API 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해주세요.' },
-            { status: 503, headers: CORS_HEADERS }
-          );
-        }
-
-        if (message.includes('429')) {
+        if (message === 'RATE_LIMIT_429') {
           return Response.json(
             { error: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' },
             { status: 429, headers: CORS_HEADERS }
+          );
+        }
+
+        if (message === 'SERVICE_UNAVAILABLE_503') {
+          return Response.json(
+            { error: 'API 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해주세요.' },
+            { status: 503, headers: CORS_HEADERS }
           );
         }
 

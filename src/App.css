@@ -273,6 +273,12 @@
   align-items: end;
 }
 
+.prompt-textarea-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .prompt-textarea {
   min-height: 138px;
   padding: 18px 18px;
@@ -283,6 +289,13 @@
 
 .prompt-textarea::placeholder {
   color: var(--text-soft);
+}
+
+.char-counter {
+  align-self: flex-end;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  letter-spacing: 0.02em;
 }
 
 .btn-generate {

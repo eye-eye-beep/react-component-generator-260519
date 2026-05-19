@@ -44,11 +44,15 @@ export function useComponentGenerator(): UseComponentGeneratorReturn {
     setIsLoading(true);
     setError(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, ...(apiKey && { apiKey }), provider }),
+        signal: controller.signal,
       });
 
       const data = await res.json();
@@ -66,9 +70,12 @@ export function useComponentGenerator(): UseComponentGeneratorReturn {
 
       setComponents((prev) => [newComponent, ...prev]);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error
+        ? (err.name === 'AbortError' ? '요청 시간 초과. 다시 시도해주세요.' : err.message)
+        : 'Unknown error';
       setError(message);
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
     }
   }, []);

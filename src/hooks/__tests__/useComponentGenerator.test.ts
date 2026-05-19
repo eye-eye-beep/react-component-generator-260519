@@ -111,3 +111,64 @@ describe('useComponentGenerator — localStorage 영속화', () => {
     expect((saved[0] as Record<string, unknown>).code).toBe('render(<div>Generated</div>)');
   });
 });
+
+describe('useComponentGenerator — 요청 타임아웃 (evaluator 이슈 #6)', () => {
+  it('정상 응답은 타임아웃 전에 완료되면 저장된다', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ code: 'render(<div>OK</div>)' }),
+      })
+    );
+
+    const { result } = renderHook(() => useComponentGenerator());
+
+    await act(async () => {
+      await result.current.generate('프롬프트', 'key', 'anthropic');
+    });
+
+    expect(result.current.components).toHaveLength(1);
+    expect(result.current.error).toBe(null);
+  });
+
+  it('API 에러 응답도 정상 처리된다', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({ error: 'API 키 오류' }),
+      })
+    );
+
+    const { result } = renderHook(() => useComponentGenerator());
+
+    await act(async () => {
+      await result.current.generate('프롬프트', 'bad-key', 'anthropic');
+    });
+
+    expect(result.current.error).toBe('API 키 오류');
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('AbortError는 타임아웃 메시지로 변환된다', async () => {
+    const abortError = new Error('The operation was aborted.');
+    Object.defineProperty(abortError, 'name', { value: 'AbortError' });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        throw abortError;
+      })
+    );
+
+    const { result } = renderHook(() => useComponentGenerator());
+
+    await act(async () => {
+      await result.current.generate('프롬프트', 'key', 'anthropic');
+    });
+
+    expect(result.current.error).toBe('요청 시간 초과. 다시 시도해주세요.');
+    expect(result.current.isLoading).toBe(false);
+  });
+});
