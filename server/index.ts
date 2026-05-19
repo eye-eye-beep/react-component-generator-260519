@@ -1,4 +1,4 @@
-import { stripCodeFences, ensureRenderCall } from './utils';
+import { stripCodeFences, ensureRenderCall, parseAnthropicSSELine, parseGoogleSSELine } from './utils';
 
 const SYSTEM_PROMPT = `You are a React component generator. Generate a single React component based on the user's description.
 
@@ -146,6 +146,110 @@ async function callGoogle(prompt: string, apiKey: string): Promise<string> {
     .join('');
 }
 
+async function* callAnthropicStream(prompt: string, apiKey: string): AsyncGenerator<string> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
+      stream: true,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (response.status === 429) throw new Error('RATE_LIMIT_429');
+  if (response.status === 503) throw new Error('SERVICE_UNAVAILABLE_503');
+  if (!response.ok) throw new Error(`Claude API error: ${response.status}`);
+  if (!response.body) throw new Error('No response body from Anthropic');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const text = parseAnthropicSSELine(line.trim());
+      if (text !== null) yield text;
+    }
+  }
+  if (buffer) {
+    const text = parseAnthropicSSELine(buffer.trim());
+    if (text !== null) yield text;
+  }
+}
+
+async function* callGoogleStream(prompt: string, apiKey: string): AsyncGenerator<string> {
+  const model = 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 8192 },
+    }),
+  });
+
+  if (response.status === 429) throw new Error('RATE_LIMIT_429');
+  if (response.status === 503) throw new Error('SERVICE_UNAVAILABLE_503');
+  if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
+  if (!response.body) throw new Error('No response body from Gemini');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // MAX_TOKENS 체크 (스트리밍 중 마지막 청크에 포함될 수 있음)
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(trimmed.slice(6)) as {
+            candidates?: Array<{ finishReason?: string }>;
+          };
+          if (parsed.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+            throw new Error('생성된 코드가 너무 길어 잘렸습니다. 더 간단한 컴포넌트를 요청해주세요.');
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.includes('잘렸습니다')) throw e;
+        }
+      }
+      const text = parseGoogleSSELine(trimmed);
+      if (text !== null) yield text;
+    }
+  }
+  if (buffer) {
+    const text = parseGoogleSSELine(buffer.trim());
+    if (text !== null) yield text;
+  }
+}
+
+const SSE_HEADERS = {
+  ...CORS_HEADERS,
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+  'Connection': 'keep-alive',
+};
+
 const server = Bun.serve({
   port: 3002,
   async fetch(req) {
@@ -169,10 +273,11 @@ const server = Bun.serve({
 
     if (req.method === 'POST' && url.pathname === '/api/generate') {
       try {
-        const { prompt, apiKey, provider = 'anthropic' } = (await req.json()) as {
+        const { prompt, apiKey, provider = 'anthropic', stream = false } = (await req.json()) as {
           prompt: string;
           apiKey?: string;
           provider?: Provider;
+          stream?: boolean;
         };
 
         const resolvedKey = resolveApiKey(provider, apiKey);
@@ -191,14 +296,48 @@ const server = Bun.serve({
           );
         }
 
-        const text =
+        if (!stream) {
+          // 기존 비스트리밍 경로 — 그대로 유지
+          const text =
+            provider === 'google'
+              ? await callGoogle(prompt, resolvedKey)
+              : await callAnthropic(prompt, resolvedKey);
+
+          const code = ensureRenderCall(stripCodeFences(text));
+          return Response.json({ code }, { headers: CORS_HEADERS });
+        }
+
+        // 스트리밍 경로: SSE 응답 반환
+        const generator =
           provider === 'google'
-            ? await callGoogle(prompt, resolvedKey)
-            : await callAnthropic(prompt, resolvedKey);
+            ? callGoogleStream(prompt, resolvedKey)
+            : callAnthropicStream(prompt, resolvedKey);
 
-        const code = ensureRenderCall(stripCodeFences(text));
+        let accumulated = '';
+        const readable = new ReadableStream({
+          async start(controller) {
+            const encode = (s: string) => new TextEncoder().encode(s);
+            try {
+              for await (const chunk of generator) {
+                accumulated += chunk;
+                controller.enqueue(encode(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`));
+              }
+              const code = ensureRenderCall(stripCodeFences(accumulated));
+              controller.enqueue(encode(`data: ${JSON.stringify({ type: 'done', code })}\n\n`));
+            } catch (err) {
+              const message = err instanceof Error ? err.message : 'Unknown error';
+              const userMessage =
+                message === 'RATE_LIMIT_429' ? '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' :
+                message === 'SERVICE_UNAVAILABLE_503' ? 'API 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해주세요.' :
+                message;
+              controller.enqueue(encode(`data: ${JSON.stringify({ type: 'error', error: userMessage })}\n\n`));
+            } finally {
+              controller.close();
+            }
+          },
+        });
 
-        return Response.json({ code }, { headers: CORS_HEADERS });
+        return new Response(readable, { headers: SSE_HEADERS });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
 
